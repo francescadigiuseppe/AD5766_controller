@@ -1,0 +1,20 @@
+# STM32CubeIDE / Eclipse specific
+Debug/
+Release/
+.settings/
+.cproject
+.project
+*.launch
+
+# Compilazione e output
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.d
+*.su
+
+# File temporanei di sistema
+.DS_Store
+Thumbs.db
