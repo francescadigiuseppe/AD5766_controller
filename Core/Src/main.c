@@ -524,7 +524,7 @@ static void MX_GPIO_Init(void)
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM2) {
-        // Overrun Check: If spi_state != 0, previous cycle didn't finish!
+        // Overrun Check: If spi_state != 0, previous cycle didn't finish
         if (spi_state != 0) {
             // Force reset CS pins to avoid lockup
             HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
