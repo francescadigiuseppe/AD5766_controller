@@ -167,22 +167,22 @@ void AD5766_Init_Chips(void) {
     uint8_t tx_cmd[3];
     
     // --- 1. HARDWARE RESET ---
-    HAL_GPIO_WritePin(AD_RESET_GPIO_Port, AD_RESET_Pin, GPIO_PIN_RESET);
+    FAST_PIN_LOW(AD_RESET_GPIO_Port, AD_RESET_Pin);
     HAL_Delay(1);
-    HAL_GPIO_WritePin(AD_RESET_GPIO_Port, AD_RESET_Pin, GPIO_PIN_SET);
+    FAST_PIN_HIGH(AD_RESET_GPIO_Port, AD_RESET_Pin);
     HAL_Delay(5); // Allow boot time
 
     // --- 2. SET RANGE (All channels +/- 10V) ---
     for(uint8_t ch = 0; ch < 16; ch++) {
         AD5766_BuildFrame(tx_cmd, AD5766_CMD_SET_RANGE, ch, SPAN_CODE);
         // Send to Board 1
-        HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_RESET);
+        FAST_PIN_LOW(AD_CS1_GPIO_Port,AD_CS1_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-        HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
+        FAST_PIN_HIGH(AD_CS1_GPIO_Port,AD_CS1_Pin);
         // Send to Board 2
-        HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_RESET);
+        FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-        HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
+        FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);
     }
     
     // --- 3. SET CUSTOM DC VOLTAGES (Channels 8-15) ---
@@ -193,24 +193,24 @@ void AD5766_Init_Chips(void) {
         // --- BOARD 1 DC ---
         uint16_t code_b1 = VOLT_TO_CODE(Config_DC_Volts_Board1[i]);
         AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG, dac_ch, code_b1);
-        
-        HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_RESET);
+
+        FAST_PIN_LOW(AD_CS1_GPIO_Port,AD_CS1_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-        HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
+        FAST_PIN_HIGH(AD_CS1_GPIO_Port,AD_CS1_Pin);
 
         // --- BOARD 2 DC ---
         uint16_t code_b2 = VOLT_TO_CODE(Config_DC_Volts_Board2[i]);
         AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG, dac_ch, code_b2);
         
-        HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_RESET);
+        FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-        HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
+        FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);    
     }
 
     // --- 4. LATCH DC VALUES ---
-    HAL_GPIO_WritePin(AD_LDAC_GPIO_Port, AD_LDAC_Pin, GPIO_PIN_RESET);
+    FAST_PIN_LOW(AD_LDAC_GPIO_Port,AD_LDAC_Pin);
     HAL_Delay(1);
-    HAL_GPIO_WritePin(AD_LDAC_GPIO_Port, AD_LDAC_Pin, GPIO_PIN_SET);
+    FAST_PIN_HIGH(AD_LDAC_GPIO_Port,AD_LDAC_Pin);
 }
 
 /**
@@ -288,8 +288,11 @@ int main(void)
   MX_DMA_Init();
   MX_SPI1_Init();
   MX_TIM2_Init();
-
   /* USER CODE BEGIN 2 */
+  
+  // HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+  // HAL_Delay(500);
+  // HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 
   // 1. Ensure all Control Pins are Inactive (High)
   HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
@@ -479,38 +482,37 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
+  __HAL_RCC_GPIOK_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, AD_CS2_Pin|AD_LDAC_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOG, AD_LDAC_Pin|AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(AD_RESET_GPIO_Port, AD_RESET_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
-
-  /*Configure GPIO pins : AD_CS2_Pin AD_LDAC_Pin */
-  GPIO_InitStruct.Pin = AD_CS2_Pin|AD_LDAC_Pin;
+  /*Configure GPIO pins : AD_LDAC_Pin AD_RESET_Pin AD_CS2_Pin AD_CS1_Pin */
+  GPIO_InitStruct.Pin = AD_LDAC_Pin|AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LED1_Pin */
+  GPIO_InitStruct.Pin = LED1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : AD_RESET_Pin */
-  GPIO_InitStruct.Pin = AD_RESET_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(AD_RESET_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : AD_CS1_Pin */
-  GPIO_InitStruct.Pin = AD_CS1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(AD_CS1_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -524,18 +526,19 @@ static void MX_GPIO_Init(void)
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM2) {
+      // FAST_PIN_HIGH(LED1_GPIO_Port, LED1_Pin);
         // Overrun Check: If spi_state != 0, previous cycle didn't finish
         if (spi_state != 0) {
             // Force reset CS pins to avoid lockup
-            HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
-            HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
+            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
         }
 
         // --- START PHASE: Board 1 ---
         spi_state = 1; 
         
         // Select Board 1
-        HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_RESET);
+        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
         
         // Start DMA with data for current wave index
         HAL_SPI_Transmit_DMA(&hspi1, Board1_Pattern[wave_index], DMA_BUFFER_SIZE);
@@ -550,21 +553,21 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
         
         if (spi_state == 1) {
             // --- FINISHED BOARD 1 ---
-            HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
+            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
 
             // --- START BOARD 2 ---
             spi_state = 2;
-            HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_RESET);
+            FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
             HAL_SPI_Transmit_DMA(&hspi1, Board2_Pattern[wave_index], DMA_BUFFER_SIZE);
         }
         else if (spi_state == 2) {
             // --- FINISHED BOARD 2 ---
-            HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
+            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
             // --- UPDATE OUTPUTS (Pulse LDAC) ---
-            HAL_GPIO_WritePin(AD_LDAC_GPIO_Port, AD_LDAC_Pin, GPIO_PIN_RESET);
+            FAST_PIN_LOW(AD_LDAC_GPIO_Port, AD_LDAC_Pin);
             __NOP(); __NOP(); __NOP(); __NOP(); // Short delay
-            HAL_GPIO_WritePin(AD_LDAC_GPIO_Port, AD_LDAC_Pin, GPIO_PIN_SET);
+            FAST_PIN_HIGH(AD_LDAC_GPIO_Port, AD_LDAC_Pin);
 
             // Reset State
             spi_state = 0; 
