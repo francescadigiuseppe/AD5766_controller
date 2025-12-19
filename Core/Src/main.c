@@ -60,10 +60,10 @@ TIM_HandleTypeDef htim2;
 #define SPI_BYTES_PER_CH   3       // 24 bits = 3 bytes
 
 /* --- DAC SETTINGS --- */
-// Define the hardware range to configure in Init (e.g., +/-10V)
-#define V_MIN  -10.0f
-#define V_MAX  +10.0f
-#define SPAN_CODE 0x0000
+// Define the hardware range to configure in Init
+#define V_MIN  -5.0f
+#define V_MAX  +5.0f
+#define SPAN_CODE 0x0C
 
 // Macro to map Voltage to DAC Code (16-bit = 65535 steps)
 #define VOLT_TO_CODE(v)  ((uint16_t)(((v - V_MIN) / (V_MAX - V_MIN)) * 65535.0f))
@@ -73,12 +73,12 @@ TIM_HandleTypeDef htim2;
 // 1. DC CONFIGURATION (Static Channels: 8-15 of each board)
 // Enter the desired VOLTAGE for each channel here.
 float Config_DC_Volts_Board1[8] = { 
-    1.5f,  -2.0f,  5.0f,  0.0f,  3.3f,  -5.0f,  9.0f,  -9.0f 
+    1.5f,  -2.0f,  5.0f,  0.0f,  3.3f,  -5.0f,  2.0f,  -1.0f 
     // Ch8,    Ch9,        Ch10,      Ch11,      Ch12,      Ch13,       Ch14,      Ch15
 };
 
 float Config_DC_Volts_Board2[8] = { 
-    0.0f,   0.0f,  1.0f,  2.0f,  3.0f,   4.0f,  5.0f,   6.0f 
+    0.0f,   0.0f,  1.0f,  2.0f,  3.0f,   4.0f,  2.0f,   -1.0f 
     // Ch8,     Ch9,        Ch10,      Ch11,      Ch12,      Ch13,       Ch14,      Ch15
 };
 
@@ -98,10 +98,10 @@ WaveConfig_t Config_Waves_Board1[8] = {
     // Freq(Hz),  Amp(V),  Offset(V), Phase(Rad)
     {  1000.0f,   5.0f,    0.0f,      0.0f }, // Ch 0
     {  2000.0f,   2.5f,    1.0f,      0.0f }, // Ch 1
-    {  5000.0f,   9.0f,    0.0f,      0.0f }, // Ch 2 (Max Recommended Freq)
+    {  5000.0f,   4.0f,    0.0f,      0.0f }, // Ch 2 (Max Recommended Freq)
     {   500.0f,   1.0f,   -5.0f,      0.0f }, // Ch 3
-    {   100.0f,   8.0f,    0.0f,      0.0f }, // Ch 4
-    {  1000.0f,   5.0f,    0.0f,      3.14f}, // Ch 5 (Counter-phase to Ch0)
+    {   100.0f,   2.0f,    0.0f,      0.0f }, // Ch 4
+    {  1000.0f,   1.0f,    0.0f,      3.14f}, // Ch 5 (Counter-phase to Ch0)
     {  3000.0f,   3.0f,    3.0f,      0.0f }, // Ch 6
     {  4000.0f,   2.0f,   -2.0f,      0.0f }  // Ch 7
 };
@@ -127,8 +127,11 @@ volatile uint16_t wave_index = 0; // uint16_t needed because NUM_SAMPLES > 255
 volatile uint8_t spi_state = 0;   // 0=Idle, 1=Board1, 2=Board2
 
 /* --- AD5766 COMMANDS --- */
-#define AD5766_CMD_WR_INPUT_REG  0x10 
-#define AD5766_CMD_SET_RANGE     0x0C 
+#define AD5766_CMD_WR_INPUT_REG(x)  (0x10 | ((x) & 0xF)) 
+// #define AD5766_CMD_SW_LDAC		       0x30
+// #define AD5766_CMD_SET_RANGE         0x4C 
+// #define AD5766_LDAC(x)			(1 << ((x) & 0xF))
+#define AD5766_CMD_WR_LDAC	        0x30
 
 /* USER CODE END PV */
 
@@ -148,13 +151,26 @@ static void MX_TIM2_Init(void);
 /**
  * @brief Constructs a 24-bit SPI frame for the AD5766.
  */
-void AD5766_BuildFrame(uint8_t* buff, uint8_t cmd, uint8_t addr, uint16_t data) {
+void AD5766_BuildFrame(uint8_t* buff, uint8_t cmd, uint16_t data) {
     // Byte 2: Command (4 bit) + Address (4 bit)
-    buff[0] = cmd | (addr & 0x0F);
-    // Byte 1: Data High (8 bit)
-    buff[1] = (data >> 8) & 0xFF;
-    // Byte 0: Data Low (8 bit)
-    buff[2] = (data & 0xFF);
+    // buff[0] = cmd | (addr & 0x0F);
+    // // Byte 1: Data High (8 bit)
+    // buff[1] = (data >> 8) & 0xFF;
+    // // Byte 0: Data Low (8 bit)
+    // buff[2] = (data & 0xFF);
+    	buff[0] = cmd;
+   	  buff[1] = (data & 0xFF00) >> 8;
+	    buff[2] = (data & 0x00FF) >> 0;
+}
+
+/**
+ * @brief Set software LDAC for all channels of one board.
+ */
+int32_t AD5766_set_sw_ldac_all(uint8_t* buff,
+			   uint16_t setting)
+{
+	AD5766_BuildFrame(buff, AD5766_CMD_WR_LDAC,
+				    setting);
 }
 
 /**
@@ -174,7 +190,7 @@ void AD5766_Init_Chips(void) {
 
     // --- 2. SET RANGE (All channels +/- 10V) ---
     for(uint8_t ch = 0; ch < 16; ch++) {
-        AD5766_BuildFrame(tx_cmd, AD5766_CMD_SET_RANGE, ch, SPAN_CODE);
+        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG(ch), SPAN_CODE);
         // Send to Board 1
         FAST_PIN_LOW(AD_CS1_GPIO_Port,AD_CS1_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
@@ -192,7 +208,7 @@ void AD5766_Init_Chips(void) {
         
         // --- BOARD 1 DC ---
         uint16_t code_b1 = VOLT_TO_CODE(Config_DC_Volts_Board1[i]);
-        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG, dac_ch, code_b1);
+        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG(dac_ch), code_b1);
 
         FAST_PIN_LOW(AD_CS1_GPIO_Port,AD_CS1_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
@@ -200,7 +216,7 @@ void AD5766_Init_Chips(void) {
 
         // --- BOARD 2 DC ---
         uint16_t code_b2 = VOLT_TO_CODE(Config_DC_Volts_Board2[i]);
-        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG, dac_ch, code_b2);
+        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG(dac_ch), code_b2);
         
         FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
@@ -236,7 +252,7 @@ void Generate_Waveforms(void) {
             if (volts < V_MIN) volts = V_MIN;
 
             uint16_t code = VOLT_TO_CODE(volts);
-            AD5766_BuildFrame(&Board1_Pattern[s][ch*3], AD5766_CMD_WR_INPUT_REG, ch, code);
+            AD5766_BuildFrame(&Board1_Pattern[s][ch*3], AD5766_CMD_WR_INPUT_REG(ch), code);
         }
 
         // --- BOARD 2 GENERATION ---
@@ -250,7 +266,7 @@ void Generate_Waveforms(void) {
             if (volts < V_MIN) volts = V_MIN;
 
             uint16_t code = VOLT_TO_CODE(volts);
-            AD5766_BuildFrame(&Board2_Pattern[s][ch*3], AD5766_CMD_WR_INPUT_REG, ch, code);
+            AD5766_BuildFrame(&Board2_Pattern[s][ch*3], AD5766_CMD_WR_INPUT_REG(ch), code);
         }
     }
 }
