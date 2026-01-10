@@ -6,7 +6,7 @@ Release/
 .project
 *.launch
 
-# Compilazione e output
+# Compilation e output
 *.bin
 *.elf
 *.hex
@@ -15,6 +15,6 @@ Release/
 *.d
 *.su
 
-# File temporanei di sistema
+# Temporary systenm files
 .DS_Store
 Thumbs.db

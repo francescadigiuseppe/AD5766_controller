@@ -53,32 +53,22 @@ TIM_HandleTypeDef htim2;
 #include <string.h>
 
 /* --- SYSTEM SETTINGS --- */
-#define SAMPLE_RATE       80000.0f // 80 kSps System Update Rate
-#define NUM_SAMPLES       800      // Larger buffer to allow different frequencies
-                                   // Base Frequency Resolution = 80000 / 800 = 100 Hz
+#define SAMPLE_RATE       20000.0f // 20kHz kSps 
+#define NUM_SAMPLES       200      // 20000 / 200 = 100 Hz resolution
 #define CHANNELS_PER_BOARD 8       // Number of Dynamic (AC) channels per board
 #define SPI_BYTES_PER_CH   3       // 24 bits = 3 bytes
-
-/* --- DAC SETTINGS --- */
-// Define the hardware range to configure in Init
-#define V_MIN  -5.0f
-#define V_MAX  +5.0f
-#define SPAN_CODE 0x0C
-
-// Macro to map Voltage to DAC Code (16-bit = 65535 steps)
-#define VOLT_TO_CODE(v)  ((uint16_t)(((v - V_MIN) / (V_MAX - V_MIN)) * 65535.0f))
 
 /* --- CONFIGURATION --- */
 
 // 1. DC CONFIGURATION (Static Channels: 8-15 of each board)
 // Enter the desired VOLTAGE for each channel here.
 float Config_DC_Volts_Board1[8] = { 
-    1.5f,  -2.0f,  5.0f,  0.0f,  3.3f,  -5.0f,  2.0f,  -1.0f 
+    1.5f,  -2.0f,  5.0f,  0.0f,  3.3f,  -0.5f,  2.0f,  -1.0f 
     // Ch8,    Ch9,        Ch10,      Ch11,      Ch12,      Ch13,       Ch14,      Ch15
 };
 
 float Config_DC_Volts_Board2[8] = { 
-    0.0f,   0.0f,  1.0f,  2.0f,  3.0f,   4.0f,  2.0f,   -1.0f 
+    0.0f,   0.0f,  1.0f,  2.0f,  3.0f,   1.0f,  2.0f,   -1.0f 
     // Ch8,     Ch9,        Ch10,      Ch11,      Ch12,      Ch13,       Ch14,      Ch15
 };
 
@@ -96,14 +86,14 @@ typedef struct {
 
 WaveConfig_t Config_Waves_Board1[8] = {
     // Freq(Hz),  Amp(V),  Offset(V), Phase(Rad)
-    {  1000.0f,   5.0f,    0.0f,      0.0f }, // Ch 0
-    {  2000.0f,   2.5f,    1.0f,      0.0f }, // Ch 1
-    {  5000.0f,   4.0f,    0.0f,      0.0f }, // Ch 2 (Max Recommended Freq)
-    {   500.0f,   1.0f,   -5.0f,      0.0f }, // Ch 3
-    {   100.0f,   2.0f,    0.0f,      0.0f }, // Ch 4
-    {  1000.0f,   1.0f,    0.0f,      3.14f}, // Ch 5 (Counter-phase to Ch0)
-    {  3000.0f,   3.0f,    3.0f,      0.0f }, // Ch 6
-    {  4000.0f,   2.0f,   -2.0f,      0.0f }  // Ch 7
+    {   100.0f,   1.0f,    0.0f,      0.0f }, // Ch 0
+    {   200.0f,   2.5f,    1.0f,      0.0f }, // Ch 1
+    {  1200.0f,   2.0f,    0.0f,      0.0f }, // Ch 2 
+    {   500.0f,   1.0f,    0.0f,      0.0f }, // Ch 3
+    {   700.0f,   2.0f,    0.0f,      0.0f }, // Ch 4
+    {  1000.0f,   1.0f,    -1.0f,     3.14f}, // Ch 5 
+    {   400.0f,   3.0f,    0.0f,      0.0f }, // Ch 6
+    {  1600.0f,   2.0f,   -2.0f,      0.0f }  // Ch 7
 };
 
 WaveConfig_t Config_Waves_Board2[8] = {
@@ -118,6 +108,48 @@ WaveConfig_t Config_Waves_Board2[8] = {
     {   700.0f,   5.0f,    0.0f,      0.0f }  // Ch 7
 };
 
+/* --- AD5766 COMMANDS --- */
+
+// Command binary 0101 (5) combined with Address 0000 (0) = 0x50
+#define AD5766_CMD_MAIN_POWER   0x50 
+
+// Command binary 0101 (5) combined with Address 0001 (1) = 0x51
+#define AD5766_CMD_DITHER_POWER 0x51 
+
+/* --- DATA DEFINITIONS --- */
+// "0" means Power Up (Normal Operation). "1" means Power Down.
+// We want 0x0000 to turn everything ON.
+#define DATA_POWER_UP_ALL       0x0000 
+#define DATA_PWR_DOWN_DITHER    0xFFFF // Keep Dither OFF (1=Off)
+#define AD5766_CMD_DITHER_PWR   0x80 // Dither Power Control (datasheet Table 29)
+
+#define AD5766_CMD_SW_RESET      0x70   // Command 0111 (7) | Address 0000 (0)
+#define AD5766_DATA_RESET_CODE   0x1234 // Magic word - Table 30
+
+// Span Settings Calculation (See Datasheet Table 24 & 25):
+#define AD5766_CMD_WR_INPUT_REG(x)  (0x10 | ((x) & 0xF)) 
+#define AD5766_CMD_WR_SPAN_REG  0x40 
+// Bits D4-D3 (Power-Up): 00 = Zero Scale
+// Bits D2-D0 (Span Range):
+//   If you want +/- 5V  -> S2=1, S1=1, S0=0 -> Binary 110 -> 0x06
+//   If you want +/- 10V -> S2=1, S1=1, S0=1 -> Binary 111 -> 0x07
+// Use 0x0006 for +/- 5V Range with Zero Scale Power-up
+#define SPAN_CODE_5V 0x0006 
+// Use 0x0007 for +/- 10V Range with Zero Scale Power-up
+#define SPAN_CODE_10V 0x0007
+// Macro to map Voltage to DAC Code (16-bit = 65535 steps)
+#define VOLT_TO_CODE(v)  ((uint16_t)(((v - V_MIN) / (V_MAX - V_MIN)) * 65535.0f))
+#define V_MIN -5
+#define V_MAX 5
+
+// Command: 0011 (SW LDAC) | Address: 0000 | Data: FFFF (Update All Channels)
+uint8_t SW_LDAC_all[3] = {0x30, 0xFF, 0xFF};
+// Command 0x30 (SW LDAC) with Mask 0x00FF
+// 0x00 -> High Byte (Ch 15-8): 0 (Do NOT update DC channels)
+// 0xFF -> Low Byte  (Ch 7-0) : 1 (Update AC channels)
+uint8_t SW_LDAC_AC_Only[3] = {0x30, 0x00, 0xFF};
+
+
 /* --- SYSTEM VARIABLES --- */
 #define DMA_BUFFER_SIZE (CHANNELS_PER_BOARD * SPI_BYTES_PER_CH)
 uint8_t Board1_Pattern[NUM_SAMPLES][DMA_BUFFER_SIZE];
@@ -125,13 +157,6 @@ uint8_t Board2_Pattern[NUM_SAMPLES][DMA_BUFFER_SIZE];
 
 volatile uint16_t wave_index = 0; // uint16_t needed because NUM_SAMPLES > 255
 volatile uint8_t spi_state = 0;   // 0=Idle, 1=Board1, 2=Board2
-
-/* --- AD5766 COMMANDS --- */
-#define AD5766_CMD_WR_INPUT_REG(x)  (0x10 | ((x) & 0xF)) 
-// #define AD5766_CMD_SW_LDAC		       0x30
-// #define AD5766_CMD_SET_RANGE         0x4C 
-// #define AD5766_LDAC(x)			(1 << ((x) & 0xF))
-#define AD5766_CMD_WR_LDAC	        0x30
 
 /* USER CODE END PV */
 
@@ -163,14 +188,18 @@ void AD5766_BuildFrame(uint8_t* buff, uint8_t cmd, uint16_t data) {
 	    buff[2] = (data & 0x00FF) >> 0;
 }
 
-/**
- * @brief Set software LDAC for all channels of one board.
- */
-int32_t AD5766_set_sw_ldac_all(uint8_t* buff,
-			   uint16_t setting)
-{
-	AD5766_BuildFrame(buff, AD5766_CMD_WR_LDAC,
-				    setting);
+static inline void SPI_Send_3Bytes_Fast(uint8_t *pData) {
+    // Spedisce 3 byte bypassando i controlli HAL
+    hspi1.Instance->DR = pData[0];
+    while (!(__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE))); // Aspetta buffer vuoto
+    
+    hspi1.Instance->DR = pData[1];
+    while (!(__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE)));
+    
+    hspi1.Instance->DR = pData[2];
+    while (!(__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE)));
+    
+    while (__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_BSY)); // Aspetta fine trasmissione
 }
 
 /**
@@ -182,15 +211,50 @@ int32_t AD5766_set_sw_ldac_all(uint8_t* buff,
 void AD5766_Init_Chips(void) {
     uint8_t tx_cmd[3];
     
-    // --- 1. HARDWARE RESET ---
+    // 1. RESET
+    // --- HW ---
     FAST_PIN_LOW(AD_RESET_GPIO_Port, AD_RESET_Pin);
     HAL_Delay(1);
     FAST_PIN_HIGH(AD_RESET_GPIO_Port, AD_RESET_Pin);
     HAL_Delay(5); // Allow boot time
+    // --- SW ---
+    AD5766_BuildFrame(tx_cmd, AD5766_CMD_SW_RESET, AD5766_DATA_RESET_CODE);
+    // Board 1
+    FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    // Board 2
+    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    HAL_Delay(5); // Allow boot time
 
-    // --- 2. SET RANGE (All channels +/- 10V) ---
+    // 2. MAIN POWER UP
+    AD5766_BuildFrame(tx_cmd, AD5766_CMD_DITHER_PWR, DATA_POWER_UP_ALL);
+    // Board 1
+    FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    // Board 2
+    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+
+    HAL_Delay(1); // Wait for internal bias to stabilize
+
+    // 3. DISABLE DITHER
+    // Use Command 0x51 with Data 0xFFFF (All Ones = All Dither Blocks OFF)
+    AD5766_BuildFrame(tx_cmd, AD5766_CMD_DITHER_POWER, DATA_PWR_DOWN_DITHER);
+    FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+
+    // 4. SET RANGE (All channels)
     for(uint8_t ch = 0; ch < 16; ch++) {
-        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG(ch), SPAN_CODE);
+        AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_SPAN_REG | ch, SPAN_CODE_5V);
         // Send to Board 1
         FAST_PIN_LOW(AD_CS1_GPIO_Port,AD_CS1_Pin);
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
@@ -223,10 +287,16 @@ void AD5766_Init_Chips(void) {
         FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);    
     }
 
-    // --- 4. LATCH DC VALUES ---
-    FAST_PIN_LOW(AD_LDAC_GPIO_Port,AD_LDAC_Pin);
-    HAL_Delay(1);
-    FAST_PIN_HIGH(AD_LDAC_GPIO_Port,AD_LDAC_Pin);
+    // --- 4. LATCH DC VALUES (Software LDAC) ---
+    // Send command to Board 1
+    FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+    HAL_SPI_Transmit(&hspi1, SW_LDAC_all, 3, 10);
+    FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+
+    // Send command to Board 2
+    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    HAL_SPI_Transmit(&hspi1, SW_LDAC_all, 3, 10);
+    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 }
 
 /**
@@ -313,7 +383,6 @@ int main(void)
   // 1. Ensure all Control Pins are Inactive (High)
   HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(AD_LDAC_GPIO_Port, AD_LDAC_Pin, GPIO_PIN_SET);
 
   // 2. Initialize Chips (Hardware Reset & Range Setup)
   AD5766_Init_Chips();
@@ -330,8 +399,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -407,7 +474,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -443,7 +510,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 1125-1;
+  htim2.Init.Period = 4500-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -503,13 +570,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOG, AD_LDAC_Pin|AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOG, AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : AD_LDAC_Pin AD_RESET_Pin AD_CS2_Pin AD_CS1_Pin */
-  GPIO_InitStruct.Pin = AD_LDAC_Pin|AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin;
+  /*Configure GPIO pins :  AD_RESET_Pin AD_CS2_Pin AD_CS1_Pin */
+  GPIO_InitStruct.Pin = AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -580,13 +647,22 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
             // --- FINISHED BOARD 2 ---
             FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
-            // --- UPDATE OUTPUTS (Pulse LDAC) ---
-            FAST_PIN_LOW(AD_LDAC_GPIO_Port, AD_LDAC_Pin);
-            __NOP(); __NOP(); __NOP(); __NOP(); // Short delay
-            FAST_PIN_HIGH(AD_LDAC_GPIO_Port, AD_LDAC_Pin);
+            // --- TRIGGER OUTPUT UPDATE (AC Channels Only) ---
+            // We toggle CS1 and CS2 sequentially to send the LDAC command.
+            // Since we use the mask 0x00FF, DC channels (8-15) will remain rock solid.
 
-            // Reset State
-            spi_state = 0; 
+            // 1. Update Board 1 (Channels 0-7)
+            FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+            SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only); 
+            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+
+            // 2. Update Board 2 (Channels 0-7)
+            FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+            SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only);
+            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+
+            // --- PREPARE FOR NEXT CYCLE ---
+            spi_state = 0;
             
             // Advance Wave Index
             wave_index++;
