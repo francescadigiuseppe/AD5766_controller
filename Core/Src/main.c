@@ -630,6 +630,59 @@ static void MX_GPIO_Init(void)
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM2) {
+// Puntatori ai dati di questo istante temporale
+        uint8_t *pBuff1 = Board1_Pattern[wave_index];
+        uint8_t *pBuff2 = Board2_Pattern[wave_index];
+
+        // --- INVIO DATI: CANALE PER CANALE ---
+        // Dobbiamo "bussare" (CS Toggle) per ogni singolo canale
+        for (int ch = 0; ch < 8; ch++) {
+            // Calcola l'offset nel buffer (ch * 3)
+            uint16_t offset = ch * 3;
+
+            // --- BOARD 1: Invia Ch[x] ---
+            FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+            SPI_Send_Fast(&pBuff1[offset], 3); // Manda solo 3 byte!
+            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin); // LATCH! Il chip memorizza Ch[x]
+
+            // --- BOARD 2: Invia Ch[x] ---
+            FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+            SPI_Send_Fast(&pBuff2[offset], 3); // Manda solo 3 byte!
+            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin); // LATCH!
+        }
+
+        // --- UPDATE OUTPUTS (SW LDAC) ---
+        // Ora che tutti gli 8 registri interni sono carichi, diamo il "GO" a tutti insieme.
+        
+        // Update Board 1
+        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+        SPI_Send_Fast(SW_LDAC_AC_Only, 3); 
+        FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+
+        // Update Board 2
+        FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        SPI_Send_Fast(SW_LDAC_AC_Only, 3);
+        FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+
+        // --- AVANZAMENTO INDICE ---
+        wave_index++;
+        if (wave_index >= NUM_SAMPLES) {
+            wave_index = 0;
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+/*
       // --- 1. INVIO BOARD 1 (24 Bytes) ---
         FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
         SPI_Send_Fast(Board1_Pattern[wave_index], DMA_BUFFER_SIZE); // Invia i 24 byte pattern
@@ -656,7 +709,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         if (wave_index >= NUM_SAMPLES) {
             wave_index = 0;
         }
-
+*/
 
 
       
@@ -675,7 +728,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         
         // // Start DMA with data for current wave index
         // HAL_SPI_Transmit_DMA(&hspi1, Board1_Pattern[wave_index], DMA_BUFFER_SIZE);
-    }
+    // }
 }
 
 /**
