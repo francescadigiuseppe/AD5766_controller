@@ -202,6 +202,27 @@ static inline void SPI_Send_3Bytes_Fast(uint8_t *pData) {
     while (__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_BSY)); // Aspetta fine trasmissione
 }
 
+// Funzione universale per inviare N bytes alla massima velocità possibile
+// Blocca la CPU, ma evita l'overhead degli interrupt
+static inline void SPI_Send_Fast(uint8_t *pData, uint16_t len) {
+// Accesso diretto al registro dati per massima velocità
+    volatile uint32_t *dr_reg = &hspi1.Instance->DR;
+    volatile uint32_t *sr_reg = &hspi1.Instance->SR;
+
+    for (uint16_t i = 0; i < len; i++) {
+        // Scrivi il dato
+        *dr_reg = pData[i];
+        
+        // Attendi che il buffer di trasmissione sia vuoto (TXE)
+        // Su F469 a 180MHz questo while gira poche volte se SPI è veloce
+        while (!(*sr_reg & SPI_FLAG_TXE));
+    }
+    
+    // IMPORTANTE: Attendi che la trasmissione fisica sia finita (BUSY flag)
+    // Se non lo fai, alzi il pin CS prima che l'ultimo bit sia uscito!
+    while (*sr_reg & SPI_FLAG_BSY);
+}
+
 /**
  * @brief Initialization function.
  * 1. Resets Chips.
@@ -474,7 +495,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -609,69 +630,98 @@ static void MX_GPIO_Init(void)
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM2) {
-      // FAST_PIN_HIGH(LED1_GPIO_Port, LED1_Pin);
-        // Overrun Check: If spi_state != 0, previous cycle didn't finish
-        if (spi_state != 0) {
-            // Force reset CS pins to avoid lockup
-            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
-            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+      // --- 1. INVIO BOARD 1 (24 Bytes) ---
+        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+        SPI_Send_Fast(Board1_Pattern[wave_index], DMA_BUFFER_SIZE); // Invia i 24 byte pattern
+        FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+
+        // --- 2. INVIO BOARD 2 (24 Bytes) ---
+        FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        SPI_Send_Fast(Board2_Pattern[wave_index], DMA_BUFFER_SIZE); // Invia i 24 byte pattern
+        FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+
+        // --- 3. LATCH OUTPUTS (LDAC Command) ---
+        // Aggiorna Board 1
+        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+        SPI_Send_Fast(SW_LDAC_AC_Only, 3); 
+        FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+
+        // Aggiorna Board 2
+        FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        SPI_Send_Fast(SW_LDAC_AC_Only, 3);
+        FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+
+        // --- 4. AVANZAMENTO INDICE ---
+        wave_index++;
+        if (wave_index >= NUM_SAMPLES) {
+            wave_index = 0;
         }
 
-        // --- START PHASE: Board 1 ---
-        spi_state = 1; 
+
+
+      
+        // // Overrun Check: If spi_state != 0, previous cycle didn't finish
+        // if (spi_state != 0) {
+        //     // Force reset CS pins to avoid lockup
+        //     FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+        //     FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        // }
+
+        // // --- START PHASE: Board 1 ---
+        // spi_state = 1; 
         
-        // Select Board 1
-        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+        // // Select Board 1
+        // FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
         
-        // Start DMA with data for current wave index
-        HAL_SPI_Transmit_DMA(&hspi1, Board1_Pattern[wave_index], DMA_BUFFER_SIZE);
+        // // Start DMA with data for current wave index
+        // HAL_SPI_Transmit_DMA(&hspi1, Board1_Pattern[wave_index], DMA_BUFFER_SIZE);
     }
 }
 
 /**
  * @brief SPI DMA Complete Callback. Handles the sequence.
  */
-void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
-    if (hspi->Instance == SPI1) {
+// void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
+//     if (hspi->Instance == SPI1) {
         
-        if (spi_state == 1) {
-            // --- FINISHED BOARD 1 ---
-            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+//         if (spi_state == 1) {
+//             // --- FINISHED BOARD 1 ---
+//             FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
 
-            // --- START BOARD 2 ---
-            spi_state = 2;
-            FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-            HAL_SPI_Transmit_DMA(&hspi1, Board2_Pattern[wave_index], DMA_BUFFER_SIZE);
-        }
-        else if (spi_state == 2) {
-            // --- FINISHED BOARD 2 ---
-            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+//             // --- START BOARD 2 ---
+//             spi_state = 2;
+//             FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+//             HAL_SPI_Transmit_DMA(&hspi1, Board2_Pattern[wave_index], DMA_BUFFER_SIZE);
+//         }
+//         else if (spi_state == 2) {
+//             // --- FINISHED BOARD 2 ---
+//             FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
-            // --- TRIGGER OUTPUT UPDATE (AC Channels Only) ---
-            // We toggle CS1 and CS2 sequentially to send the LDAC command.
-            // Since we use the mask 0x00FF, DC channels (8-15) will remain rock solid.
+//             // --- TRIGGER OUTPUT UPDATE (AC Channels Only) ---
+//             // We toggle CS1 and CS2 sequentially to send the LDAC command.
+//             // Since we use the mask 0x00FF, DC channels (8-15) will remain rock solid.
 
-            // 1. Update Board 1 (Channels 0-7)
-            FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
-            SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only); 
-            FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+//             // 1. Update Board 1 (Channels 0-7)
+//             FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+//             SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only); 
+//             FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
 
-            // 2. Update Board 2 (Channels 0-7)
-            FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-            SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only);
-            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+//             // 2. Update Board 2 (Channels 0-7)
+//             FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+//             SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only);
+//             FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
-            // --- PREPARE FOR NEXT CYCLE ---
-            spi_state = 0;
+//             // --- PREPARE FOR NEXT CYCLE ---
+//             spi_state = 0;
             
-            // Advance Wave Index
-            wave_index++;
-            if (wave_index >= NUM_SAMPLES) {
-                wave_index = 0; // Wrap around
-            }
-        }
-    }
-}
+//             // Advance Wave Index
+//             wave_index++;
+//             if (wave_index >= NUM_SAMPLES) {
+//                 wave_index = 0; // Wrap around
+//             }
+//         }
+//     }
+// }
 /* USER CODE END 4 */
 
 /**
