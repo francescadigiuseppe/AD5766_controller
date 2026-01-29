@@ -23,7 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 #include <string.h>
-
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,6 +47,10 @@ DMA_HandleTypeDef hdma_spi1_tx;
 
 TIM_HandleTypeDef htim2;
 
+UART_HandleTypeDef huart5;
+
+PCD_HandleTypeDef hpcd_USB_OTG_FS;
+
 /* USER CODE BEGIN PV */
 
 #include <math.h>
@@ -63,7 +67,7 @@ TIM_HandleTypeDef htim2;
 // 1. DC CONFIGURATION (Static Channels: 8-15 of each board)
 // Enter the desired VOLTAGE for each channel here.
 float Config_DC_Volts_Board1[8] = { 
-    1.5f,  -2.0f,  5.0f,  0.0f,  3.3f,  -0.5f,  2.0f,  -1.0f 
+    -1.5f,  -2.0f,  5.0f,  0.0f,  3.3f,  -0.5f,  2.0f,  -1.0f 
     // Ch8,    Ch9,        Ch10,      Ch11,      Ch12,      Ch13,       Ch14,      Ch15
 };
 
@@ -158,6 +162,12 @@ uint8_t Board2_Pattern[NUM_SAMPLES][DMA_BUFFER_SIZE];
 volatile uint16_t wave_index = 0; // uint16_t needed because NUM_SAMPLES > 255
 volatile uint8_t spi_state = 0;   // 0=Idle, 1=Board1, 2=Board2
 
+#define UART_RX_SIZE 64
+uint8_t UART_RxBuffer[UART_RX_SIZE]; // Dove accumuliamo la frase
+uint8_t UART_OneByte;                // Dove riceviamo il singolo carattere
+volatile uint8_t UART_RxIndex = 0;   // Indice corrente
+volatile uint8_t UART_NewCmdFlag = 0;// Bandierina: 1 = Comando pronto
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -166,6 +176,8 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_USB_OTG_FS_PCD_Init(void);
+static void MX_UART5_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -214,12 +226,9 @@ static inline void SPI_Send_Fast(uint8_t *pData, uint16_t len) {
         *dr_reg = pData[i];
         
         // Attendi che il buffer di trasmissione sia vuoto (TXE)
-        // Su F469 a 180MHz questo while gira poche volte se SPI è veloce
         while (!(*sr_reg & SPI_FLAG_TXE));
     }
     
-    // IMPORTANTE: Attendi che la trasmissione fisica sia finita (BUSY flag)
-    // Se non lo fai, alzi il pin CS prima che l'ultimo bit sia uscito!
     while (*sr_reg & SPI_FLAG_BSY);
 }
 
@@ -245,21 +254,21 @@ void AD5766_Init_Chips(void) {
     HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
     FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
     // Board 2
-    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    // FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
     HAL_Delay(5); // Allow boot time
 
     // 2. MAIN POWER UP
-    AD5766_BuildFrame(tx_cmd, AD5766_CMD_DITHER_PWR, DATA_POWER_UP_ALL);
+    AD5766_BuildFrame(tx_cmd, DATA_POWER_UP_ALL, DATA_POWER_UP_ALL);
     // Board 1
     FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
     HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
     FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
     // Board 2
-    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    // FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
     HAL_Delay(1); // Wait for internal bias to stabilize
 
@@ -269,9 +278,9 @@ void AD5766_Init_Chips(void) {
     FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
     HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
     FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
-    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-    HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+    // FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
     // 4. SET RANGE (All channels)
     for(uint8_t ch = 0; ch < 16; ch++) {
@@ -281,9 +290,9 @@ void AD5766_Init_Chips(void) {
         HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
         FAST_PIN_HIGH(AD_CS1_GPIO_Port,AD_CS1_Pin);
         // Send to Board 2
-        FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
-        HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-        FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);
+        // FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
+        // HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+        // FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);
     }
     
     // --- 3. SET CUSTOM DC VOLTAGES (Channels 8-15) ---
@@ -303,9 +312,9 @@ void AD5766_Init_Chips(void) {
         uint16_t code_b2 = VOLT_TO_CODE(Config_DC_Volts_Board2[i]);
         AD5766_BuildFrame(tx_cmd, AD5766_CMD_WR_INPUT_REG(dac_ch), code_b2);
         
-        FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
-        HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
-        FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);    
+        // FAST_PIN_LOW(AD_CS2_GPIO_Port,AD_CS2_Pin);
+        // HAL_SPI_Transmit(&hspi1, tx_cmd, 3, 10);
+        // FAST_PIN_HIGH(AD_CS2_GPIO_Port,AD_CS2_Pin);    
     }
 
     // --- 4. LATCH DC VALUES (Software LDAC) ---
@@ -315,9 +324,9 @@ void AD5766_Init_Chips(void) {
     FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
 
     // Send command to Board 2
-    FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-    HAL_SPI_Transmit(&hspi1, SW_LDAC_all, 3, 10);
-    FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+    // HAL_SPI_Transmit(&hspi1, SW_LDAC_all, 3, 10);
+    // FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 }
 
 /**
@@ -395,15 +404,21 @@ int main(void)
   MX_DMA_Init();
   MX_SPI1_Init();
   MX_TIM2_Init();
+  MX_USB_OTG_FS_PCD_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
   
   // HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
   // HAL_Delay(500);
   // HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 
+  HAL_UART_Receive_IT(&huart5, &UART_OneByte, 1);
+  char msg[] = "STM32 Ready via UART1\r\n";
+  HAL_UART_Transmit(&huart5, (uint8_t*)msg, strlen(msg), 100);
+
   // 1. Ensure all Control Pins are Inactive (High)
   HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
+  // HAL_GPIO_WritePin(AD_CS2_GPIO_Port, AD_CS2_Pin, GPIO_PIN_SET);
 
   // 2. Initialize Chips (Hardware Reset & Range Setup)
   AD5766_Init_Chips();
@@ -420,6 +435,58 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    
+  if (UART_NewCmdFlag == 1)
+      {
+
+          // HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+
+          UART_NewCmdFlag = 0; // Abbassa flag
+
+          char msg_resp[100];
+          int cmd_ch;
+          int cmd_mv; // Millivolt (Interi!)
+          char cmd_type[10];
+
+          // Parsing: "DC [ch] [millivolt]" -> Esempio "DC 0 2500"
+          if (sscanf((char*)UART_RxBuffer, "%s %d %d", cmd_type, &cmd_ch, &cmd_mv) >= 3)
+          {
+              if (strcmp(cmd_type, "DC") == 0)
+              {
+                  if (cmd_ch >= 0 && cmd_ch < 8)
+                  {
+                      float volts = (float)cmd_mv / 1000.0f;
+                      Config_DC_Volts_Board1[cmd_ch] = volts;
+
+                      // --- Aggiorna Hardware ---
+                      uint8_t dac_ch = cmd_ch + 8;
+                      uint16_t code = VOLT_TO_CODE(volts);
+                      uint8_t tx[3];
+                      AD5766_BuildFrame(tx, AD5766_CMD_WR_INPUT_REG(dac_ch), code);
+
+                      FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+                      SPI_Send_Fast(tx, 3);
+                      FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+                      
+                      FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
+                      SPI_Send_Fast(SW_LDAC_all, 3);
+                      FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+
+                      // Risposta UART
+                      snprintf(msg_resp, sizeof(msg_resp), "OK: DC Ch%d -> %d mV\r\n", cmd_ch, cmd_mv);
+                      HAL_UART_Transmit(&huart5, (uint8_t*)msg_resp, strlen(msg_resp), 100);
+                  }
+              }
+          }
+          else
+          {
+               // Echo semplice se il comando non è riconosciuto
+               snprintf(msg_resp, sizeof(msg_resp), "ECHO: %s\r\n", UART_RxBuffer);
+               HAL_UART_Transmit(&huart5, (uint8_t*)msg_resp, strlen(msg_resp), 100);
+          }
+      }
+    /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -442,15 +509,14 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 90;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 15;
+  RCC_OscInitStruct.PLL.PLLN = 144;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLQ = 5;
   RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -463,10 +529,10 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -495,7 +561,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -531,7 +597,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4500-1;
+  htim2.Init.Period = 1125-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -552,6 +618,74 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief UART5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART5_Init(void)
+{
+
+  /* USER CODE BEGIN UART5_Init 0 */
+
+  /* USER CODE END UART5_Init 0 */
+
+  /* USER CODE BEGIN UART5_Init 1 */
+
+  /* USER CODE END UART5_Init 1 */
+  huart5.Instance = UART5;
+  huart5.Init.BaudRate = 115200;
+  huart5.Init.WordLength = UART_WORDLENGTH_8B;
+  huart5.Init.StopBits = UART_STOPBITS_1;
+  huart5.Init.Parity = UART_PARITY_NONE;
+  huart5.Init.Mode = UART_MODE_TX_RX;
+  huart5.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart5.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART5_Init 2 */
+
+  /* USER CODE END UART5_Init 2 */
+
+}
+
+/**
+  * @brief USB_OTG_FS Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USB_OTG_FS_PCD_Init(void)
+{
+
+  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
+
+  /* USER CODE END USB_OTG_FS_Init 0 */
+
+  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
+
+  /* USER CODE END USB_OTG_FS_Init 1 */
+  hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
+  hpcd_USB_OTG_FS.Init.dev_endpoints = 6;
+  hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
+  hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
+  hpcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.vbus_sensing_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
+  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
+
+  /* USER CODE END USB_OTG_FS_Init 2 */
 
 }
 
@@ -585,22 +719,34 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
   __HAL_RCC_GPIOK_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOG, AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(AD_CS1_GPIO_Port, AD_CS1_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOG, AD_LDAC_Pin|AD_RESET_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins :  AD_RESET_Pin AD_CS2_Pin AD_CS1_Pin */
-  GPIO_InitStruct.Pin = AD_RESET_Pin|AD_CS2_Pin|AD_CS1_Pin;
+  /*Configure GPIO pin : AD_CS1_Pin */
+  GPIO_InitStruct.Pin = AD_CS1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(AD_CS1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : AD_LDAC_Pin AD_RESET_Pin */
+  GPIO_InitStruct.Pin = AD_LDAC_Pin|AD_RESET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LED1_Pin */
@@ -646,9 +792,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
             FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin); // LATCH! Il chip memorizza Ch[x]
 
             // --- BOARD 2: Invia Ch[x] ---
-            FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-            SPI_Send_Fast(&pBuff2[offset], 3); // Manda solo 3 byte!
-            FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin); // LATCH!
+            // FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+            // SPI_Send_Fast(&pBuff2[offset], 3); // Manda solo 3 byte!
+            // FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin); // LATCH!
         }
 
         // --- UPDATE OUTPUTS (SW LDAC) ---
@@ -660,9 +806,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
 
         // Update Board 2
-        FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-        SPI_Send_Fast(SW_LDAC_AC_Only, 3);
-        FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        // FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        // SPI_Send_Fast(SW_LDAC_AC_Only, 3);
+        // FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
 
         // --- AVANZAMENTO INDICE ---
         wave_index++;
@@ -671,110 +817,37 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-/*
-      // --- 1. INVIO BOARD 1 (24 Bytes) ---
-        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
-        SPI_Send_Fast(Board1_Pattern[wave_index], DMA_BUFFER_SIZE); // Invia i 24 byte pattern
-        FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
-
-        // --- 2. INVIO BOARD 2 (24 Bytes) ---
-        FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-        SPI_Send_Fast(Board2_Pattern[wave_index], DMA_BUFFER_SIZE); // Invia i 24 byte pattern
-        FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
-
-        // --- 3. LATCH OUTPUTS (LDAC Command) ---
-        // Aggiorna Board 1
-        FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
-        SPI_Send_Fast(SW_LDAC_AC_Only, 3); 
-        FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
-
-        // Aggiorna Board 2
-        FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-        SPI_Send_Fast(SW_LDAC_AC_Only, 3);
-        FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
-
-        // --- 4. AVANZAMENTO INDICE ---
-        wave_index++;
-        if (wave_index >= NUM_SAMPLES) {
-            wave_index = 0;
-        }
-*/
-
-
-      
-        // // Overrun Check: If spi_state != 0, previous cycle didn't finish
-        // if (spi_state != 0) {
-        //     // Force reset CS pins to avoid lockup
-        //     FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
-        //     FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
-        // }
-
-        // // --- START PHASE: Board 1 ---
-        // spi_state = 1; 
-        
-        // // Select Board 1
-        // FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
-        
-        // // Start DMA with data for current wave index
-        // HAL_SPI_Transmit_DMA(&hspi1, Board1_Pattern[wave_index], DMA_BUFFER_SIZE);
-    // }
 }
 
-/**
- * @brief SPI DMA Complete Callback. Handles the sequence.
- */
-// void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
-//     if (hspi->Instance == SPI1) {
-        
-//         if (spi_state == 1) {
-//             // --- FINISHED BOARD 1 ---
-//             FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == UART5)
+    {
+        // 1. Controlla se è il terminatore (Invio / \n o \r)
+        if (UART_OneByte == '\n' || UART_OneByte == '\r')
+        {
+            if (UART_RxIndex > 0) // Se abbiamo ricevuto qualcosa prima dell'invio
+            {
+                UART_RxBuffer[UART_RxIndex] = '\0'; // Chiudi la stringa
+                UART_NewCmdFlag = 1;                // Avvisa il main
+                UART_RxIndex = 0;                   // Reset per la prossima volta
+            }
+        }
+        else
+        {
+            // 2. Accumula il carattere nel buffer
+            if (UART_RxIndex < UART_RX_SIZE - 1)
+            {
+                UART_RxBuffer[UART_RxIndex++] = UART_OneByte;
+            }
+            // Se il buffer è pieno, sovrascrivi l'ultimo (o gestisci errore), qui semplice
+        }
 
-//             // --- START BOARD 2 ---
-//             spi_state = 2;
-//             FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-//             HAL_SPI_Transmit_DMA(&hspi1, Board2_Pattern[wave_index], DMA_BUFFER_SIZE);
-//         }
-//         else if (spi_state == 2) {
-//             // --- FINISHED BOARD 2 ---
-//             FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
+        // 3. RI-ARMA L'INTERRUPT per il prossimo carattere
+        HAL_UART_Receive_IT(&huart5, &UART_OneByte, 1);
+    }
+}
 
-//             // --- TRIGGER OUTPUT UPDATE (AC Channels Only) ---
-//             // We toggle CS1 and CS2 sequentially to send the LDAC command.
-//             // Since we use the mask 0x00FF, DC channels (8-15) will remain rock solid.
-
-//             // 1. Update Board 1 (Channels 0-7)
-//             FAST_PIN_LOW(AD_CS1_GPIO_Port, AD_CS1_Pin);
-//             SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only); 
-//             FAST_PIN_HIGH(AD_CS1_GPIO_Port, AD_CS1_Pin);
-
-//             // 2. Update Board 2 (Channels 0-7)
-//             FAST_PIN_LOW(AD_CS2_GPIO_Port, AD_CS2_Pin);
-//             SPI_Send_3Bytes_Fast(SW_LDAC_AC_Only);
-//             FAST_PIN_HIGH(AD_CS2_GPIO_Port, AD_CS2_Pin);
-
-//             // --- PREPARE FOR NEXT CYCLE ---
-//             spi_state = 0;
-            
-//             // Advance Wave Index
-//             wave_index++;
-//             if (wave_index >= NUM_SAMPLES) {
-//                 wave_index = 0; // Wrap around
-//             }
-//         }
-//     }
-// }
 /* USER CODE END 4 */
 
 /**
